@@ -1,8 +1,11 @@
 from fastapi import FastAPI
-
 from app.config import settings
+from app.routers import chat
+
 
 app = FastAPI(title="Mosaic")
+app.include_router(chat.router)
+
 
 
 @app.get("/health")
