@@ -1,15 +1,15 @@
 from fastapi import APIRouter
 
 from app.schemas import ChatRequest, ChatResponse
+from app.services.llm import generate_reply
 
-# A router is a group of related routes. The prefix is added to each path.
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 @router.post("", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    # req is already validated by the time we get here
-    return ChatResponse(
-        persona=req.persona,
-        reply=f"[{req.persona}] You said: {req.message}",
+    reply = await generate_reply(
+        system_prompt=f"You are a helpful {req.persona}. Keep replies short.",
+        user_message=req.message,
     )
+    return ChatResponse(persona=req.persona, reply=reply)
