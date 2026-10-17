@@ -1,0 +1,15 @@
+.app { max-width: 640px; margin: 0 auto; padding: 16px; font-family: system-ui, sans-serif; }
+.status { font-size: 12px; color: #666; }
+.personas { display: flex; gap: 8px; margin-bottom: 12px; }
+.personas button { padding: 6px 12px; border: 1px solid #ccc; border-radius: 16px; background: #fff; cursor: pointer; }
+.personas button.active { background: #333; color: #fff; }
+.personas button.new-chat { margin-left: auto; border-style: dashed; }
+.disclaimer { font-size: 12px; background: #fff8e1; padding: 8px; border-radius: 6px; }
+.chat { height: 420px; overflow-y: auto; border: 1px solid #ddd; border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.msg { padding: 8px 12px; border-radius: 12px; max-width: 80%; white-space: pre-wrap; }
+.msg.user { align-self: flex-end; background: #dbeafe; }
+.msg.bot { align-self: flex-start; background: #f1f1f1; }
+.msg.error { align-self: center; background: #fee2e2; }
+.msg.crisis { background: #fef3c7; border: 2px solid #f59e0b; }
+form { display: flex; gap: 8px; margin-top: 12px; }
+form input { flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 8px; }
