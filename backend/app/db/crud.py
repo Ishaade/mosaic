@@ -6,7 +6,7 @@ These functions are sync: SQLAlchemy's default engine is sync, and FastAPI
 runs sync path-operation code in a threadpool so the event loop stays free.
 """
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.db.models import Conversation, Message, User
@@ -105,3 +105,33 @@ def get_recent_messages_for_llm(
 
     selected.reverse()  # LLM expects oldest → newest
     return selected
+
+
+def delete_all_sql_for_user(db: Session, user_id: int) -> dict[str, int]:
+    """
+    Wipe this user's SQL rows (messages → conversations → user).
+
+    Order matters: messages reference conversations, conversations reference users.
+    Vector memories are deleted separately by MemoryStore.delete_user.
+    Returns counts so the API can report what was removed.
+    """
+    conv_ids = list(
+        db.scalars(select(Conversation.id).where(Conversation.user_id == user_id)).all()
+    )
+    messages_deleted = 0
+    if conv_ids:
+        result = db.execute(delete(Message).where(Message.conversation_id.in_(conv_ids)))
+        messages_deleted = result.rowcount or 0
+
+    conv_result = db.execute(delete(Conversation).where(Conversation.user_id == user_id))
+    conversations_deleted = conv_result.rowcount or 0
+
+    user_result = db.execute(delete(User).where(User.id == user_id))
+    users_deleted = user_result.rowcount or 0
+
+    db.commit()
+    return {
+        "messages": messages_deleted,
+        "conversations": conversations_deleted,
+        "users": users_deleted,
+    }

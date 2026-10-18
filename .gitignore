@@ -3,3 +3,7 @@ __pycache__/
 .env
 *.db
 node_modules/
+# ChromaDB persistent vector index (local embeddings + chunks)
+chroma_data/
+backend/chroma_data/
+.pytest_cache/

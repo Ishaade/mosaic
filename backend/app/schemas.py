@@ -48,11 +48,14 @@ class MessageOut(BaseModel):
 
 class ChatRequest(BaseModel):
     persona: Persona
+    # Hard length cap — also an injection / cost control (Phase 4)
     message: str = Field(min_length=1, max_length=2000)
     # Required: ties the chat to a row in `users`. NOT real auth — see phase notes.
     user_id: int
     # Optional: omit (or null) to start a new conversation
     conversation_id: int | None = None
+    # Helpline region override; falls back to settings.default_region
+    region: str | None = Field(default=None, max_length=8)
 
 
 class ChatResponse(BaseModel):
@@ -62,3 +65,24 @@ class ChatResponse(BaseModel):
     disclaimer: str | None = None
     user_id: int
     conversation_id: int
+    # Which safety layer fired, if any ("keyword" | "llm")
+    crisis_layer: str | None = None
+
+
+# --- Memories (Phase 3) ----------------------------------------------------
+
+
+class MemoryOut(BaseModel):
+    id: str
+    text: str
+    user_id: int
+    persona: str
+    kind: str
+    created_at: str
+
+
+class DeleteUserDataOut(BaseModel):
+    user_id: int
+    sql: dict[str, int]
+    memories_deleted: int
+

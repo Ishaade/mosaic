@@ -1,4 +1,7 @@
 # One entry per persona. Keys must match the Literal in schemas.py.
+# Safety + anti-injection rules are appended in get_system_prompt().
+
+from app.services.prompt_guard import ANTI_INJECTION_RULES, PERSONA_SAFETY_RULES
 
 PERSONAS: dict[str, str] = {
     "therapist": """You are Mosaic's supportive listener, an AI with a calm, warm, non-judgmental tone.
@@ -29,4 +32,7 @@ PERSONAS: dict[str, str] = {
 
 
 def get_system_prompt(persona: str) -> str:
-    return PERSONAS[persona]
+    """Persona voice + per-persona safety + global anti-injection rules."""
+    base = PERSONAS[persona]
+    safety = PERSONA_SAFETY_RULES.get(persona, "")
+    return f"{base}\n\n{safety}\n\n{ANTI_INJECTION_RULES}"

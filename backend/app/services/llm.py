@@ -49,15 +49,17 @@ def _map_status_to_client_error(status_code: int) -> tuple[int, str]:
     return 502, "The AI provider returned an unexpected error. Please try again later."
 
 
-async def generate_reply(
+async def complete_chat(
     system_prompt: str,
     messages: list[dict[str, str]],
+    *,
+    temperature: float = 0.7,
 ) -> str:
     """
-    The ONLY function in the app that talks to the LLM provider.
+    Low-level chat completion with retries.
 
-    `messages` is a list of {"role": "user"|"assistant", "content": "..."}
-    already trimmed to our history budget by the caller.
+    Used by generate_reply (user-facing chat) and by memory extraction.
+    `messages` is a list of {"role": "user"|"assistant", "content": "..."}.
     """
     api_messages = [{"role": "system", "content": system_prompt}, *messages]
 
@@ -67,8 +69,8 @@ async def generate_reply(
             response = await client.chat.completions.create(
                 model=settings.llm_model,
                 messages=api_messages,
+                temperature=temperature,
             )
-            # The reply text lives inside the first "choice"
             content = response.choices[0].message.content
             if not content:
                 raise LLMError(502, "The AI provider returned an empty reply.")
@@ -80,7 +82,6 @@ async def generate_reply(
         except APITimeoutError as exc:
             last_error = exc
             logger.warning("LLM timeout (attempt %s/%s)", attempt + 1, _MAX_RETRIES)
-            # Timeouts: retry with backoff — often transient
             if attempt < _MAX_RETRIES - 1:
                 await asyncio.sleep(_BACKOFF_BASE_SECONDS * (2**attempt))
                 continue
@@ -99,7 +100,6 @@ async def generate_reply(
         except APIStatusError as exc:
             last_error = exc
             status = exc.status_code
-            # Retry only rate-limits and server errors — 4xx (except 429) won't help
             if status == 429 or status >= 500:
                 logger.warning(
                     "LLM status %s (attempt %s/%s)", status, attempt + 1, _MAX_RETRIES
@@ -111,11 +111,61 @@ async def generate_reply(
             raise LLMError(http_status, detail) from exc
 
         except Exception as exc:
-            # Catch-all: never leak traceback or keys to the client
             logger.exception("Unexpected LLM error")
             raise LLMError(
                 502, "Something went wrong talking to the AI provider."
             ) from exc
 
-    # Should be unreachable, but keeps type-checkers happy
     raise LLMError(502, "The AI provider failed after retries.") from last_error
+
+
+async def generate_reply(
+    system_prompt: str,
+    messages: list[dict[str, str]],
+) -> str:
+    """The chat-path helper: slightly higher temperature for natural replies."""
+    return await complete_chat(system_prompt, messages, temperature=0.7)
+
+
+async def stream_reply(
+    system_prompt: str,
+    messages: list[dict[str, str]],
+    *,
+    temperature: float = 0.7,
+):
+    """
+    Yield text deltas as the provider streams them (for SSE).
+
+    Trade-off vs complete_chat: we do not retry mid-stream — a dropped
+    connection surfaces as an error event to the client instead.
+    """
+    api_messages = [{"role": "system", "content": system_prompt}, *messages]
+    try:
+        stream = await client.chat.completions.create(
+            model=settings.llm_model,
+            messages=api_messages,
+            temperature=temperature,
+            stream=True,
+        )
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
+    except APITimeoutError as exc:
+        raise LLMError(504, "The AI provider timed out. Please try again.") from exc
+    except APIConnectionError as exc:
+        raise LLMError(
+            503, "Could not reach the AI provider. Please try again later."
+        ) from exc
+    except APIStatusError as exc:
+        http_status, detail = _map_status_to_client_error(exc.status_code)
+        raise LLMError(http_status, detail) from exc
+    except LLMError:
+        raise
+    except Exception as exc:
+        logger.exception("Unexpected LLM stream error")
+        raise LLMError(
+            502, "Something went wrong talking to the AI provider."
+        ) from exc

@@ -9,6 +9,39 @@ const USER_ID_KEY = "mosaic_user_id";
 const CONVERSATION_ID_KEY = "mosaic_conversation_id";
 const PERSONA_KEY = "mosaic_persona";
 
+/**
+ * Read a fetch body as Server-Sent Events.
+ * Calls onEvent(parsedJson) for each `data: {...}` line.
+ */
+async function readSSE(response, onEvent) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    // SSE events are separated by a blank line
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() || "";
+
+    for (const part of parts) {
+      for (const line of part.split("\n")) {
+        if (line.startsWith("data: ")) {
+          const json = line.slice(6);
+          try {
+            onEvent(JSON.parse(json));
+          } catch {
+            // ignore malformed chunks
+          }
+        }
+      }
+    }
+  }
+}
+
 export default function App() {
   const [persona, setPersona] = useState(
     () => localStorage.getItem(PERSONA_KEY) || "friend"
@@ -22,10 +55,9 @@ export default function App() {
     const saved = localStorage.getItem(CONVERSATION_ID_KEY);
     return saved ? Number(saved) : null;
   });
-  const [ready, setReady] = useState(false); // true once user + optional history loaded
+  const [ready, setReady] = useState(false);
   const bottomRef = useRef(null);
 
-  // On first visit: create a user (or reuse the id from localStorage)
   useEffect(() => {
     async function ensureUser() {
       try {
@@ -35,7 +67,6 @@ export default function App() {
 
         let id = localStorage.getItem(USER_ID_KEY);
         if (id) {
-          // Confirm the stored user still exists (e.g. after wiping mosaic.db)
           const check = await fetch(`${API_URL}/users/${id}`);
           if (!check.ok) {
             localStorage.removeItem(USER_ID_KEY);
@@ -65,7 +96,6 @@ export default function App() {
     ensureUser();
   }, []);
 
-  // Once we have a user, reload the open conversation's history (if any)
   useEffect(() => {
     if (userId == null) return;
 
@@ -79,7 +109,6 @@ export default function App() {
           `${API_URL}/conversations/${conversationId}/messages?user_id=${userId}`
         );
         if (!res.ok) {
-          // Stale id (deleted DB, wrong owner) — start fresh
           localStorage.removeItem(CONVERSATION_ID_KEY);
           setConversationId(null);
           setMessages([]);
@@ -94,7 +123,7 @@ export default function App() {
           }))
         );
       } catch {
-        // Network blip — still allow chatting; history just won't show
+        // Network blip — still allow chatting
       } finally {
         setReady(true);
       }
@@ -102,7 +131,6 @@ export default function App() {
     loadHistory();
   }, [userId, conversationId]);
 
-  // Scroll to the newest message whenever the list grows
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -121,35 +149,76 @@ export default function App() {
     setInput("");
     setLoading(true);
 
+    // Placeholder bot bubble that we fill as tokens arrive
+    setMessages((prev) => [...prev, { role: "bot", text: "", streaming: true }]);
+
     try {
       const body = { persona, message: text, user_id: userId };
       if (conversationId != null) body.conversation_id = conversationId;
 
-      const res = await fetch(`${API_URL}/chat`, {
+      const res = await fetch(`${API_URL}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+
+      // Non-SSE HTTP errors (validation etc.)
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || `Server returned ${res.status}`);
       }
-      const data = await res.json();
-      persistConversationId(data.conversation_id);
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "bot",
-          text: data.reply,
-          crisis: data.crisis,
-          disclaimer: data.disclaimer,
-        },
-      ]);
+
+      let sawError = false;
+      await readSSE(res, (event) => {
+        if (event.type === "meta") {
+          persistConversationId(event.conversation_id);
+          setMessages((prev) => {
+            const next = [...prev];
+            const last = { ...next[next.length - 1] };
+            last.crisis = event.crisis;
+            last.disclaimer = event.disclaimer;
+            next[next.length - 1] = last;
+            return next;
+          });
+        } else if (event.type === "token") {
+          setMessages((prev) => {
+            const next = [...prev];
+            const last = { ...next[next.length - 1] };
+            last.text = (last.text || "") + event.text;
+            next[next.length - 1] = last;
+            return next;
+          });
+        } else if (event.type === "error") {
+          sawError = true;
+        }
+      });
+
+      if (sawError) throw new Error("stream error");
+
+      // Clear streaming flag on the last bot message
+      setMessages((prev) => {
+        const next = [...prev];
+        const last = { ...next[next.length - 1], streaming: false };
+        next[next.length - 1] = last;
+        return next;
+      });
     } catch {
-      setMessages((prev) => [
-        ...prev,
-        { role: "error", text: "Something went wrong. Please try again." },
-      ]);
+      setMessages((prev) => {
+        // Replace empty/partial streaming bubble with an error
+        const next = prev.filter((m) => !(m.streaming && !m.text));
+        if (next.length && next[next.length - 1].streaming) {
+          next[next.length - 1] = {
+            role: "error",
+            text: "Something went wrong. Please try again.",
+          };
+        } else {
+          next.push({
+            role: "error",
+            text: "Something went wrong. Please try again.",
+          });
+        }
+        return next;
+      });
     } finally {
       setLoading(false);
     }
@@ -159,7 +228,6 @@ export default function App() {
     setPersona(p);
     localStorage.setItem(PERSONA_KEY, p);
     setMessages([]);
-    // New persona = new conversation thread
     setConversationId(null);
     localStorage.removeItem(CONVERSATION_ID_KEY);
   }
@@ -213,9 +281,9 @@ export default function App() {
               className={`msg ${m.role} ${m.crisis ? "crisis" : ""}`}
             >
               {m.text}
+              {m.streaming && !m.text ? "…" : ""}
             </div>
           ))}
-        {loading && <div className="msg bot">typing...</div>}
         <div ref={bottomRef} />
       </div>
 
