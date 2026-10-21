@@ -54,23 +54,27 @@ async def complete_chat(
     messages: list[dict[str, str]],
     *,
     temperature: float = 0.7,
+    max_tokens: int | None = None,
 ) -> str:
     """
     Low-level chat completion with retries.
 
-    Used by generate_reply (user-facing chat) and by memory extraction.
-    `messages` is a list of {"role": "user"|"assistant", "content": "..."}.
+    Used by generate_reply, memory extraction, and cheap classifiers.
+    `max_tokens` caps completion length (keep small for routing/safety JSON).
     """
     api_messages = [{"role": "system", "content": system_prompt}, *messages]
+    create_kwargs: dict = {
+        "model": settings.llm_model,
+        "messages": api_messages,
+        "temperature": temperature,
+    }
+    if max_tokens is not None:
+        create_kwargs["max_tokens"] = max_tokens
 
     last_error: Exception | None = None
     for attempt in range(_MAX_RETRIES):
         try:
-            response = await client.chat.completions.create(
-                model=settings.llm_model,
-                messages=api_messages,
-                temperature=temperature,
-            )
+            response = await client.chat.completions.create(**create_kwargs)
             content = response.choices[0].message.content
             if not content:
                 raise LLMError(502, "The AI provider returned an empty reply.")

@@ -134,15 +134,16 @@ def test_delete_user_removes_vectors(mem_store):
     assert mem_store.list_for_user(9) == []
 
 
-def test_privacy_list_and_delete_api(client, mem_store):
-    user_id = client.post("/users", json={}).json()["id"]
+def test_privacy_list_and_delete_api(client, mem_store, auth_user):
+    user, headers = auth_user
+    user_id = user["id"]
     mem_store.add_facts(
         user_id=user_id,
         persona="friend",
         facts=[{"kind": "preference", "text": "Prefers dark mode", "scope": "global"}],
     )
 
-    listed = client.get(f"/users/{user_id}/memories")
+    listed = client.get("/memories", headers=headers)
     assert listed.status_code == 200
     assert len(listed.json()) == 1
 
@@ -157,20 +158,55 @@ def test_privacy_list_and_delete_api(client, mem_store):
     ):
         client.post(
             "/chat",
-            json={"persona": "friend", "message": "hello", "user_id": user_id},
+            headers=headers,
+            json={"persona": "friend", "message": "hello"},
         )
 
-    wiped = client.delete(f"/users/{user_id}/data")
+    wiped = client.delete("/auth/me", headers=headers)
     assert wiped.status_code == 200
     body = wiped.json()
     assert body["memories_deleted"] >= 1
     assert body["sql"]["users"] == 1
 
-    assert client.get(f"/users/{user_id}").status_code == 404
+    assert client.get("/auth/me", headers=headers).status_code == 401
 
 
-def test_crisis_skips_memory_extraction(client, mem_store):
-    user_id = client.post("/users", json={}).json()["id"]
+def test_delete_one_memory_ownership(client, mem_store, auth_user, other_auth_user):
+    user, headers = auth_user
+    _other, other_headers = other_auth_user
+    ids = mem_store.add_facts(
+        user_id=user["id"],
+        persona="friend",
+        facts=[{"kind": "preference", "text": "Likes tea", "scope": "global"}],
+    )
+    mem_id = ids[0]
+
+    blocked = client.delete(f"/memories/{mem_id}", headers=other_headers)
+    assert blocked.status_code == 404
+
+    ok = client.delete(f"/memories/{mem_id}", headers=headers)
+    assert ok.status_code == 200
+    assert mem_store.list_for_user(user["id"]) == []
+
+
+def test_delete_all_memories_keeps_account(client, mem_store, auth_user):
+    user, headers = auth_user
+    mem_store.add_facts(
+        user_id=user["id"],
+        persona="friend",
+        facts=[{"kind": "preference", "text": "Likes tea", "scope": "global"}],
+    )
+    wiped = client.delete("/memories", headers=headers)
+    assert wiped.status_code == 200
+    assert wiped.json()["memories_deleted"] >= 1
+    me = client.get("/auth/me", headers=headers)
+    assert me.status_code == 200
+    assert client.get("/memories", headers=headers).json() == []
+
+
+def test_crisis_skips_memory_extraction(client, mem_store, auth_user):
+    user, headers = auth_user
+    user_id = user["id"]
 
     with patch(
         "app.routers.chat.extract_facts",
@@ -181,10 +217,10 @@ def test_crisis_skips_memory_extraction(client, mem_store):
     ) as mock_llm:
         res = client.post(
             "/chat",
+            headers=headers,
             json={
                 "persona": "therapist",
                 "message": "I want to kill myself",
-                "user_id": user_id,
             },
         )
 

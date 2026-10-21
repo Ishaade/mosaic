@@ -6,27 +6,39 @@ These functions are sync: SQLAlchemy's default engine is sync, and FastAPI
 runs sync path-operation code in a threadpool so the event loop stays free.
 """
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.db.models import Conversation, Message, User
 
 # Soft limit on how much past chat we feed the LLM.
 # Character count is a simple stand-in for tokens (~4 chars ≈ 1 English token).
-# Real tokenizers (tiktoken etc.) are more accurate but add a dependency.
 HISTORY_CHAR_BUDGET = 6000
 
 
-def create_user(db: Session, name: str | None = None) -> User:
-    user = User(name=name)
+def create_user(
+    db: Session,
+    *,
+    email: str,
+    password_hash: str,
+    name: str | None = None,
+) -> User:
+    """Insert a registered user. `email` must already be lowercased by the caller."""
+    user = User(email=email, password_hash=password_hash, name=name)
     db.add(user)
     db.commit()
-    db.refresh(user)  # reload so we get the auto-generated id
+    db.refresh(user)
     return user
 
 
 def get_user(db: Session, user_id: int) -> User | None:
     return db.get(User, user_id)
+
+
+def get_user_by_email(db: Session, email: str) -> User | None:
+    """Lookup by normalized (lowercase) email."""
+    stmt = select(User).where(User.email == email.lower())
+    return db.scalars(stmt).first()
 
 
 def create_conversation(db: Session, user_id: int, persona: str) -> Conversation:
@@ -74,6 +86,19 @@ def list_messages(db: Session, conversation_id: int) -> list[Message]:
     return list(db.scalars(stmt).all())
 
 
+def count_user_messages(db: Session, conversation_id: int) -> int:
+    """How many user turns exist — used for routing anti-nag cooldown."""
+    stmt = (
+        select(func.count())
+        .select_from(Message)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.role == "user",
+        )
+    )
+    return int(db.scalar(stmt) or 0)
+
+
 def get_recent_messages_for_llm(
     db: Session,
     conversation_id: int,
@@ -82,9 +107,6 @@ def get_recent_messages_for_llm(
     """
     Return the newest messages that fit inside `budget` characters,
     still in chronological order (oldest → newest) for the LLM.
-
-    Trade-off: we may drop older turns. That's intentional — long chats
-    would otherwise blow the model's context window and cost more.
     """
     stmt = (
         select(Message)
@@ -97,13 +119,12 @@ def get_recent_messages_for_llm(
     used = 0
     for msg in newest_first:
         length = len(msg.content)
-        # Always keep at least one message so the latest user turn isn't dropped
         if selected and used + length > budget:
             break
         selected.append(msg)
         used += length
 
-    selected.reverse()  # LLM expects oldest → newest
+    selected.reverse()
     return selected
 
 
@@ -113,7 +134,6 @@ def delete_all_sql_for_user(db: Session, user_id: int) -> dict[str, int]:
 
     Order matters: messages reference conversations, conversations reference users.
     Vector memories are deleted separately by MemoryStore.delete_user.
-    Returns counts so the API can report what was removed.
     """
     conv_ids = list(
         db.scalars(select(Conversation.id).where(Conversation.user_id == user_id)).all()

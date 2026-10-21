@@ -14,6 +14,10 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Always stored lowercase; unique + indexed for login lookups
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    # argon2 hash string — NEVER store plaintext passwords
+    password_hash: Mapped[str] = mapped_column(String(255))
     name: Mapped[str | None] = mapped_column(String(100), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 

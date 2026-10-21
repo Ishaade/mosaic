@@ -57,10 +57,10 @@ def test_history_wrap_only_touches_user_roles():
 @pytest.mark.parametrize("attack", INJECTION_ATTEMPTS)
 def test_injection_strings_are_valid_chat_input(attack):
     """Attacks must still pass schema (we handle them in the prompt, not 422)."""
-    req = ChatRequest(persona="friend", message=attack, user_id=1)
+    req = ChatRequest(persona="friend", message=attack)
     assert req.message == attack
 
 
 def test_message_length_limit():
     with pytest.raises(ValidationError):
-        ChatRequest(persona="friend", message="x" * 2001, user_id=1)
+        ChatRequest(persona="friend", message="x" * 2001)

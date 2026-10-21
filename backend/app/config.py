@@ -12,6 +12,20 @@ class Settings(BaseSettings):
     chroma_path: str = "./chroma_data"
     # Helpline region code: IN | US | GB | … (see app.services.helplines)
     default_region: str = "IN"
+
+    # --- Auth (Stage A) -------------------------------------------------------
+    # REQUIRED — no default. App refuses to start if JWT_SECRET is missing.
+    # Add to .env (never commit secrets): JWT_SECRET=some-long-random-string
+    jwt_secret: str
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 60
+
+    # --- Smart routing (Stage B) ---------------------------------------------
+    # Only surface a persona suggestion when confidence >= this (0–1)
+    routing_confidence_threshold: float = 0.65
+    # Suggest at most once every N user turns in a conversation (anti-nag)
+    routing_cooldown_messages: int = 3
+
     # Tell pydantic to also read from the .env file
     model_config = SettingsConfigDict(env_file=".env")
 

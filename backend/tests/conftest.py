@@ -1,13 +1,16 @@
 """
 Shared fixtures for tests.
 
-Uses an in-memory SQLite DB so tests never touch mosaic.db or need an API key.
-Phase 3 tests that need vectors use an EphemeralClient MemoryStore with a
-unique collection name (Chroma's ephemeral client is shared process-wide).
+MUST set JWT_SECRET before importing app.config / app.main (no default in Settings).
+Uses in-memory SQLite + ephemeral Chroma so tests never touch real data.
 """
 
+import os
 import uuid
 from unittest.mock import AsyncMock, patch
+
+# Required before Settings() loads — tests never read .env secrets from disk for this
+os.environ.setdefault("JWT_SECRET", "pytest-only-jwt-secret-not-for-production")
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,17 +20,22 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base, get_db
 from app.main import app
+from app.rate_limit import limiter
 from app.services.distress_classifier import DistressResult
 from app.services.memory_store import MemoryStore, set_memory_store
 
 
+@pytest.fixture(autouse=True)
+def _disable_rate_limits():
+    """Avoid 429s during the test suite."""
+    previous = limiter.enabled
+    limiter.enabled = False
+    yield
+    limiter.enabled = previous
+
+
 @pytest.fixture()
 def mock_distress_classifier():
-    """
-    Phase 4: /chat calls an LLM classifier after keywords.
-    Default mock = not crisis so tests need no API key.
-    Override in a test when you want layer-2 to fire.
-    """
     with patch(
         "app.services.distress_classifier.classify_distress",
         new_callable=AsyncMock,
@@ -38,9 +46,23 @@ def mock_distress_classifier():
         yield mocked
 
 
+@pytest.fixture(autouse=True)
+def mock_persona_router():
+    """
+    Stage B: /chat may call the persona router on cooldown turns.
+    Default = no suggestion so API tests need no LLM key.
+    Override in a test when you want a suggestion.
+    """
+    with patch(
+        "app.routers.chat.suggest_persona",
+        new_callable=AsyncMock,
+        return_value=None,
+    ) as mocked:
+        yield mocked
+
+
 @pytest.fixture()
 def mem_store():
-    """Isolated ephemeral Chroma collection for tests that touch memories."""
     store = MemoryStore(
         ephemeral=True,
         collection_name=f"test_{uuid.uuid4().hex}",
@@ -49,7 +71,7 @@ def mem_store():
     yield store
     set_memory_store(None)
 
-# StaticPool: one shared in-memory connection so all sessions see the same tables
+
 engine = create_engine(
     "sqlite://",
     connect_args={"check_same_thread": False},
@@ -71,7 +93,6 @@ def db():
 
 @pytest.fixture()
 def client(db, mock_distress_classifier):
-    """HTTP client with DB override + mocked distress classifier (no API key)."""
     def override_get_db():
         try:
             yield db
@@ -82,4 +103,19 @@ def client(db, mock_distress_classifier):
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
-    set_memory_store(None)  # don't leak ephemeral stores across tests
+    set_memory_store(None)
+
+
+@pytest.fixture()
+def auth_user(client):
+    """Default authenticated user + headers for API tests."""
+    from tests.helpers import register_and_login
+
+    return register_and_login(client, "user@example.com")
+
+
+@pytest.fixture()
+def other_auth_user(client):
+    from tests.helpers import register_and_login
+
+    return register_and_login(client, "other@example.com")

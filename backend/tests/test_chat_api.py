@@ -1,21 +1,19 @@
-"""
-API-level tests. The LLM is mocked so no API key is required.
-"""
+"""API-level chat tests. LLM mocked; auth required."""
 
 from unittest.mock import AsyncMock, patch
 
 from app.services.safety import CRISIS_REPLY
+from tests.helpers import register_and_login
 
 
-def test_create_user(client):
-    res = client.post("/users", json={})
-    assert res.status_code == 201
-    assert "id" in res.json()
+def test_chat_requires_auth(client):
+    res = client.post("/chat", json={"persona": "friend", "message": "hi"})
+    assert res.status_code == 401
 
 
 def test_ownership_blocks_other_users_messages(client, mem_store):
-    user_a = client.post("/users", json={}).json()["id"]
-    user_b = client.post("/users", json={}).json()["id"]
+    _user_a, headers_a = register_and_login(client, "owner@example.com")
+    _user_b, headers_b = register_and_login(client, "intruder@example.com")
 
     with patch(
         "app.routers.chat.generate_reply",
@@ -28,25 +26,28 @@ def test_ownership_blocks_other_users_messages(client, mem_store):
     ):
         chat = client.post(
             "/chat",
-            json={"persona": "friend", "message": "hello", "user_id": user_a},
+            headers=headers_a,
+            json={"persona": "friend", "message": "hello"},
         )
     assert chat.status_code == 200
     conv_id = chat.json()["conversation_id"]
 
     blocked = client.get(
-        f"/conversations/{conv_id}/messages", params={"user_id": user_b}
+        f"/conversations/{conv_id}/messages",
+        headers=headers_b,
     )
     assert blocked.status_code == 404
 
     allowed = client.get(
-        f"/conversations/{conv_id}/messages", params={"user_id": user_a}
+        f"/conversations/{conv_id}/messages",
+        headers=headers_a,
     )
     assert allowed.status_code == 200
     assert len(allowed.json()) == 2
 
 
-def test_crisis_saved_without_calling_llm(client, mem_store):
-    user_id = client.post("/users", json={}).json()["id"]
+def test_crisis_saved_without_calling_llm(client, mem_store, auth_user):
+    _user, headers = auth_user
 
     with patch(
         "app.routers.chat.generate_reply",
@@ -57,10 +58,10 @@ def test_crisis_saved_without_calling_llm(client, mem_store):
     ) as mock_extract:
         res = client.post(
             "/chat",
+            headers=headers,
             json={
                 "persona": "therapist",
                 "message": "I want to kill myself",
-                "user_id": user_id,
             },
         )
 
@@ -74,13 +75,13 @@ def test_crisis_saved_without_calling_llm(client, mem_store):
 
     messages = client.get(
         f"/conversations/{data['conversation_id']}/messages",
-        params={"user_id": user_id},
+        headers=headers,
     ).json()
     assert messages[-1]["content"] == CRISIS_REPLY
 
 
-def test_chat_persists_and_returns_conversation_id(client, mem_store):
-    user_id = client.post("/users", json={}).json()["id"]
+def test_chat_persists_and_returns_conversation_id(client, mem_store, auth_user):
+    _user, headers = auth_user
 
     with patch(
         "app.routers.chat.generate_reply",
@@ -93,7 +94,8 @@ def test_chat_persists_and_returns_conversation_id(client, mem_store):
     ):
         res = client.post(
             "/chat",
-            json={"persona": "friend", "message": "Hey", "user_id": user_id},
+            headers=headers,
+            json={"persona": "friend", "message": "Hey"},
         )
 
     assert res.status_code == 200

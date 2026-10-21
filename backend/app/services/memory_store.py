@@ -196,6 +196,32 @@ class MemoryStore:
             self._collection.delete(ids=ids)
         return len(ids)
 
+    def get_one(self, memory_id: str) -> MemoryHit | None:
+        """Load a single chunk by id, or None if it does not exist."""
+        raw = self._collection.get(ids=[memory_id], include=["documents", "metadatas"])
+        if not raw["ids"]:
+            return None
+        meta = (raw["metadatas"] or [{}])[0] or {}
+        return MemoryHit(
+            id=raw["ids"][0],
+            text=(raw["documents"] or [""])[0] or "",
+            user_id=int(meta.get("user_id", 0)),
+            persona=str(meta.get("persona", "")),
+            kind=str(meta.get("kind", "")),
+            created_at=str(meta.get("created_at", "")),
+        )
+
+    def delete_one(self, memory_id: str, user_id: int) -> bool:
+        """
+        Delete one chunk if it belongs to this user.
+        Returns True when deleted, False when missing or not owned (caller 404s).
+        """
+        hit = self.get_one(memory_id)
+        if hit is None or hit.user_id != int(user_id):
+            return False
+        self._collection.delete(ids=[memory_id])
+        return True
+
 
 def _hits_from_query(results: dict) -> list[MemoryHit]:
     """Chroma returns nested lists (one per query); we always send one query."""
